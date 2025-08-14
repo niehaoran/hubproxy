@@ -187,12 +187,27 @@ func getUptimeInfo() (time.Duration, float64, string) {
 func initHealthRoutes(router *gin.Engine) {
 	router.GET("/ready", func(c *gin.Context) {
 		_, uptimeSec, uptimeHuman := getUptimeInfo()
-		c.JSON(http.StatusOK, gin.H{
+
+		// 获取manifest查询统计
+		totalQueries, cacheHits, hitRate := utils.GetManifestQueryStats()
+
+		response := gin.H{
 			"ready":           true,
 			"service":         "hubproxy",
 			"start_time_unix": serviceStartTime.Unix(),
 			"uptime_sec":      uptimeSec,
 			"uptime_human":    uptimeHuman,
-		})
+		}
+
+		// 添加性能指标
+		if totalQueries > 0 {
+			response["performance"] = gin.H{
+				"manifest_queries_total":  totalQueries,
+				"manifest_cache_hits":     cacheHits,
+				"manifest_cache_hit_rate": fmt.Sprintf("%.2f%%", hitRate),
+			}
+		}
+
+		c.JSON(http.StatusOK, response)
 	})
 }

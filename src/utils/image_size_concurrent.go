@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"hubproxy/config"
@@ -13,6 +14,12 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+)
+
+// 性能监控指标
+var (
+	manifestQueryCount    int64 // manifest查询总次数
+	manifestCacheHitCount int64 // manifest缓存命中次数
 )
 
 // ConcurrentImageSizeChecker 并发镜像大小检查器
@@ -66,6 +73,9 @@ func (c *ConcurrentImageSizeChecker) CheckImageSizeConcurrent(
 		return true, nil, ""
 	}
 
+	// 增加查询计数
+	atomic.AddInt64(&manifestQueryCount, 1)
+
 	// 创建带超时的context
 	timeoutCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -83,24 +93,66 @@ func (c *ConcurrentImageSizeChecker) CheckImageSizeConcurrent(
 		return false, nil, fmt.Sprintf("解析镜像引用失败: %v", err)
 	}
 
-	// 获取镜像描述符
-	contextOptions := append(options, remote.WithContext(timeoutCtx))
-	desc, err := remote.Get(ref, contextOptions...)
-	if err != nil {
-		return false, nil, fmt.Sprintf("获取镜像信息失败: %v", err)
+	// 检查缓存
+	if IsCacheEnabled() {
+		cacheKey := BuildManifestCacheKey(imageRef, reference)
+		if cachedItem := GlobalCache.Get(cacheKey); cachedItem != nil {
+			// 缓存命中
+			atomic.AddInt64(&manifestCacheHitCount, 1)
+			fmt.Printf("🎯 大小检查缓存命中: %s:%s\n", imageRef, reference)
+
+			// 从缓存创建descriptor
+			desc := &remote.Descriptor{
+				Manifest: cachedItem.Data,
+			}
+
+			// 使用缓存的manifest进行大小检查
+			sizeInfo := &ImageSizeInfo{}
+			return c.checkImageSizeFromDescriptor(timeoutCtx, desc, cfg.Docker.MaxImageSize, sizeInfo, options)
+		}
 	}
 
-	sizeInfo = &ImageSizeInfo{}
+	// 缓存未命中，需要获取manifest
+	fmt.Printf("🔍 大小检查获取新manifest: %s:%s\n", imageRef, reference)
+	desc, err := remote.Get(ref, append(options, remote.WithContext(timeoutCtx))...)
+	if err != nil {
+		select {
+		case <-timeoutCtx.Done():
+			return false, nil, "镜像大小检查超时"
+		default:
+			return false, nil, fmt.Sprintf("获取镜像信息失败: %v", err)
+		}
+	}
 
-	switch desc.MediaType {
-	case types.OCIImageIndex, types.DockerManifestList:
-		// 多架构镜像并发处理
-		return c.checkMultiArchImageSizeConcurrent(timeoutCtx, desc, cfg.Docker.MaxImageSize, sizeInfo, contextOptions)
-	case types.OCIManifestSchema1, types.DockerManifestSchema2:
-		// 单架构镜像并发处理
-		return c.checkSingleImageSizeConcurrent(timeoutCtx, desc, cfg.Docker.MaxImageSize, sizeInfo, contextOptions)
-	default:
-		return c.checkSingleImageSizeConcurrent(timeoutCtx, desc, cfg.Docker.MaxImageSize, sizeInfo, contextOptions)
+	// 将获取的manifest缓存起来，供后续manifest请求复用
+	if IsCacheEnabled() {
+		cacheKey := BuildManifestCacheKey(imageRef, reference)
+		ttl := GetManifestTTL(reference)
+		headers := map[string]string{
+			"Docker-Content-Digest": desc.Digest.String(),
+			"Content-Length":        fmt.Sprintf("%d", len(desc.Manifest)),
+		}
+		GlobalCache.Set(cacheKey, desc.Manifest, string(desc.MediaType), headers, ttl)
+		fmt.Printf("💾 大小检查缓存manifest: %s:%s (TTL: %v)\n", imageRef, reference, ttl)
+	}
+
+	sizeInfo = &ImageSizeInfo{} // 创建大小信息结构
+	return c.checkImageSizeFromDescriptor(timeoutCtx, desc, cfg.Docker.MaxImageSize, sizeInfo, options)
+}
+
+// checkImageSizeFromDescriptor 从descriptor检查镜像大小
+func (c *ConcurrentImageSizeChecker) checkImageSizeFromDescriptor(
+	ctx context.Context,
+	desc *remote.Descriptor,
+	maxSize int64,
+	sizeInfo *ImageSizeInfo,
+	options []remote.Option,
+) (bool, *ImageSizeInfo, string) {
+	// 检查是否为多架构镜像
+	if desc.MediaType == types.OCIImageIndex || desc.MediaType == types.DockerManifestList {
+		return c.checkMultiArchImageSizeConcurrent(ctx, desc, maxSize, sizeInfo, options)
+	} else {
+		return c.checkSingleImageSizeConcurrent(ctx, desc, maxSize, sizeInfo, options)
 	}
 }
 
@@ -419,6 +471,7 @@ func InitConcurrentImageSizeChecker() {
 }
 
 // CheckImageSizeFast 快速检查镜像大小（使用并发版本）
+// 返回的sizeInfo中包含ManifestData，可供后续复用
 func CheckImageSizeFast(ctx context.Context, imageRef, reference string, options []remote.Option) (allowed bool, sizeInfo *ImageSizeInfo, reason string) {
 	if globalConcurrentChecker == nil {
 		// 回退到原始实现
@@ -426,4 +479,33 @@ func CheckImageSizeFast(ctx context.Context, imageRef, reference string, options
 	}
 
 	return globalConcurrentChecker.CheckImageSizeConcurrent(ctx, imageRef, reference, options)
+}
+
+// GetCachedManifest 获取缓存的manifest数据
+func GetCachedManifest(imageRef, reference string) *remote.Descriptor {
+	if !IsCacheEnabled() {
+		return nil
+	}
+
+	cacheKey := BuildManifestCacheKey(imageRef, reference)
+	if cachedItem := GlobalCache.Get(cacheKey); cachedItem != nil {
+		return &remote.Descriptor{
+			Manifest: cachedItem.Data,
+		}
+	}
+
+	return nil
+}
+
+// GetManifestQueryStats 获取manifest查询统计信息
+func GetManifestQueryStats() (totalQueries, cacheHits int64, hitRate float64) {
+	total := atomic.LoadInt64(&manifestQueryCount)
+	hits := atomic.LoadInt64(&manifestCacheHitCount)
+
+	var rate float64
+	if total > 0 {
+		rate = float64(hits) / float64(total) * 100
+	}
+
+	return total, hits, rate
 }

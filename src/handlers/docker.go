@@ -169,7 +169,7 @@ func parseRegistryPath(path string) (imageName, apiType, reference string) {
 // handleManifestRequest 处理manifest请求
 func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 	// 早期大小检查 - 在manifest阶段就进行验证
-	// 大小检查 - 使用并发版本
+	// 大小检查 - 使用并发版本，可能会获取manifest数据
 	ctx := c.Request.Context()
 	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, dockerProxy.options); !allowed {
 		fmt.Printf("镜像 %s:%s 大小检查失败: %s\n", imageRef, reference, reason)
@@ -185,10 +185,12 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 		}
 	}
 
+	// 尝试从缓存获取manifest（可能在大小检查时已缓存）
 	if utils.IsCacheEnabled() && c.Request.Method == http.MethodGet {
 		cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 
 		if cachedItem := utils.GlobalCache.Get(cacheKey); cachedItem != nil {
+			fmt.Printf("✅ 复用缓存的manifest: %s:%s\n", imageRef, reference)
 			utils.WriteCachedResponse(c, cachedItem)
 			return
 		}
@@ -222,6 +224,8 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 		c.Header("Content-Length", fmt.Sprintf("%d", desc.Size))
 		c.Status(http.StatusOK)
 	} else {
+		// GET请求 - 如果缓存未命中，需要重新获取
+		fmt.Printf("🔄 获取新的manifest: %s:%s\n", imageRef, reference)
 		desc, err := remote.Get(ref, dockerProxy.options...)
 		if err != nil {
 			fmt.Printf("GET请求失败: %v\n", err)
@@ -234,10 +238,12 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 			"Content-Length":        fmt.Sprintf("%d", len(desc.Manifest)),
 		}
 
+		// 缓存新获取的manifest
 		if utils.IsCacheEnabled() {
 			cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 			ttl := utils.GetManifestTTL(reference)
 			utils.GlobalCache.Set(cacheKey, desc.Manifest, string(desc.MediaType), headers, ttl)
+			fmt.Printf("💾 缓存新manifest: %s:%s (TTL: %v)\n", imageRef, reference, ttl)
 		}
 
 		c.Header("Content-Type", string(desc.MediaType))
@@ -477,7 +483,7 @@ func handleMultiRegistryRequest(c *gin.Context, registryDomain, remainingPath st
 
 // handleUpstreamManifestRequest 处理上游Registry的manifest请求
 func handleUpstreamManifestRequest(c *gin.Context, imageRef, reference string, mapping config.RegistryMapping) {
-	// 上游Registry大小检查 - 使用并发版本
+	// 上游Registry大小检查 - 使用并发版本，可能会获取manifest数据
 	options := createUpstreamOptions(mapping)
 	ctx := c.Request.Context()
 	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, options); !allowed {
@@ -494,10 +500,12 @@ func handleUpstreamManifestRequest(c *gin.Context, imageRef, reference string, m
 		}
 	}
 
+	// 尝试从缓存获取manifest（可能在大小检查时已缓存）
 	if utils.IsCacheEnabled() && c.Request.Method == http.MethodGet {
 		cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 
 		if cachedItem := utils.GlobalCache.Get(cacheKey); cachedItem != nil {
+			fmt.Printf("✅ 复用缓存的上游manifest: %s:%s\n", imageRef, reference)
 			utils.WriteCachedResponse(c, cachedItem)
 			return
 		}
