@@ -19,7 +19,7 @@ import (
 
 // DockerProxy Docker代理配置
 type DockerProxy struct {
-	registry    name.Registry
+	registry    *name.Registry  // 改为指针类型以支持nil值
 	baseOptions []remote.Option // 基础选项（不包含认证）
 }
 
@@ -65,6 +65,14 @@ func InitDockerProxy() {
 	registry, err := name.NewRegistry("registry-1.docker.io")
 	if err != nil {
 		fmt.Printf("创建Docker registry失败: %v\n", err)
+		// 即使失败也要创建一个基本的代理对象，避免空指针
+		dockerProxy = &DockerProxy{
+			registry: nil,
+			baseOptions: []remote.Option{
+				remote.WithUserAgent("hubproxy/go-containerregistry"),
+				remote.WithTransport(utils.GetGlobalHTTPClient().Transport),
+			},
+		}
 		return
 	}
 
@@ -75,7 +83,7 @@ func InitDockerProxy() {
 	}
 
 	dockerProxy = &DockerProxy{
-		registry:    registry,
+		registry:    &registry, // 使用指针
 		baseOptions: baseOptions,
 	}
 }
@@ -139,6 +147,13 @@ func ProxyDockerRegistryGin(c *gin.Context) {
 
 // handleRegistryRequest 处理Registry请求
 func handleRegistryRequest(c *gin.Context, path string) {
+	// 检查dockerProxy是否正确初始化
+	if dockerProxy == nil {
+		fmt.Printf("dockerProxy未初始化\n")
+		c.String(http.StatusInternalServerError, "Service not properly initialized")
+		return
+	}
+
 	pathWithoutV2 := strings.TrimPrefix(path, "/v2/")
 
 	if registryDomain, remainingPath := registryDetector.detectRegistryDomain(pathWithoutV2); registryDomain != "" {
@@ -167,7 +182,14 @@ func handleRegistryRequest(c *gin.Context, path string) {
 		return
 	}
 
-	imageRef := fmt.Sprintf("%s/%s", dockerProxy.registry.Name(), imageName)
+	// 安全检查registry是否可用
+	var imageRef string
+	if dockerProxy.registry != nil {
+		imageRef = fmt.Sprintf("%s/%s", dockerProxy.registry.Name(), imageName)
+	} else {
+		// 如果registry为nil，使用默认值
+		imageRef = fmt.Sprintf("registry-1.docker.io/%s", imageName)
+	}
 
 	switch apiType {
 	case "manifests":
@@ -215,6 +237,16 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 	authOptions := dockerProxy.GetOptionsWithAuth(c)
 	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, authOptions); !allowed {
 		fmt.Printf("镜像 %s:%s 大小检查失败: %s\n", imageRef, reference, reason)
+
+		// 检查是否是认证错误
+		if strings.Contains(reason, "UNAUTHORIZED") || strings.Contains(reason, "authentication required") {
+			fmt.Printf("⚠️  私有镜像需要认证: %s:%s\n", imageRef, reference)
+			c.Header("WWW-Authenticate", "Basic realm=\"Docker Registry\"")
+			c.Header("X-Error-Detail", "Private image requires authentication. Please use 'docker login' first.")
+			c.String(http.StatusUnauthorized, "Authentication required for private image. Please login with: docker login your-proxy-host:5000")
+			return
+		}
+
 		c.Header("X-Image-Size-Info", fmt.Sprintf("total=%s,layers=%d", utils.FormatBytes(sizeInfo.TotalSize), sizeInfo.LayerCount))
 		c.String(http.StatusRequestEntityTooLarge, fmt.Sprintf("镜像过大: %s", reason))
 		return
@@ -232,31 +264,46 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 		cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 
 		if cachedItem := utils.GlobalCache.Get(cacheKey); cachedItem != nil {
-			fmt.Printf("✅ 复用缓存的manifest: %s:%s\n", imageRef, reference)
-			utils.WriteCachedResponse(c, cachedItem)
+			// 缓存命中
+			fmt.Printf("🎯 Manifest缓存命中: %s:%s\n", imageRef, reference)
+			c.Header("Content-Type", cachedItem.ContentType)
+			for key, value := range cachedItem.Headers {
+				c.Header(key, value)
+			}
+			c.Data(http.StatusOK, cachedItem.ContentType, cachedItem.Data)
 			return
 		}
 	}
 
+	// 解析引用
 	var ref name.Reference
 	var err error
-
 	if strings.HasPrefix(reference, "sha256:") {
 		ref, err = name.NewDigest(fmt.Sprintf("%s@%s", imageRef, reference))
 	} else {
 		ref, err = name.NewTag(fmt.Sprintf("%s:%s", imageRef, reference))
 	}
-
 	if err != nil {
 		fmt.Printf("解析镜像引用失败: %v\n", err)
-		c.String(http.StatusBadRequest, "Invalid reference")
+		c.String(http.StatusBadRequest, "Invalid image reference")
 		return
 	}
 
 	if c.Request.Method == http.MethodHead {
+		// HEAD请求
 		desc, err := remote.Head(ref, authOptions...)
 		if err != nil {
 			fmt.Printf("HEAD请求失败: %v\n", err)
+
+			// 检查是否是认证错误
+			if strings.Contains(err.Error(), "UNAUTHORIZED") || strings.Contains(err.Error(), "authentication required") {
+				fmt.Printf("⚠️  私有镜像HEAD请求需要认证: %s:%s\n", imageRef, reference)
+				c.Header("WWW-Authenticate", "Basic realm=\"Docker Registry\"")
+				c.Header("X-Error-Detail", "Private image requires authentication. Please use 'docker login' first.")
+				c.String(http.StatusUnauthorized, "Authentication required for private image. Please login with: docker login your-proxy-host:5000")
+				return
+			}
+
 			c.String(http.StatusNotFound, "Manifest not found")
 			return
 		}
@@ -271,6 +318,16 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 		desc, err := remote.Get(ref, authOptions...)
 		if err != nil {
 			fmt.Printf("GET请求失败: %v\n", err)
+
+			// 检查是否是认证错误
+			if strings.Contains(err.Error(), "UNAUTHORIZED") || strings.Contains(err.Error(), "authentication required") {
+				fmt.Printf("⚠️  私有镜像GET请求需要认证: %s:%s\n", imageRef, reference)
+				c.Header("WWW-Authenticate", "Basic realm=\"Docker Registry\"")
+				c.Header("X-Error-Detail", "Private image requires authentication. Please use 'docker login' first.")
+				c.String(http.StatusUnauthorized, "Authentication required for private image. Please login with: docker login your-proxy-host:5000")
+				return
+			}
+
 			c.String(http.StatusNotFound, "Manifest not found")
 			return
 		}
