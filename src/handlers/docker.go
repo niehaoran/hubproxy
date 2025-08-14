@@ -19,8 +19,8 @@ import (
 
 // DockerProxy Docker代理配置
 type DockerProxy struct {
-	registry name.Registry
-	options  []remote.Option
+	registry    name.Registry
+	baseOptions []remote.Option // 基础选项（不包含认证）
 }
 
 var dockerProxy *DockerProxy
@@ -68,16 +68,57 @@ func InitDockerProxy() {
 		return
 	}
 
-	options := []remote.Option{
-		remote.WithAuth(authn.Anonymous),
+	// 基础选项，不包含认证信息
+	baseOptions := []remote.Option{
 		remote.WithUserAgent("hubproxy/go-containerregistry"),
 		remote.WithTransport(utils.GetGlobalHTTPClient().Transport),
 	}
 
 	dockerProxy = &DockerProxy{
-		registry: registry,
-		options:  options,
+		registry:    registry,
+		baseOptions: baseOptions,
 	}
+}
+
+// ExtractAuthFromRequest 从HTTP请求中提取认证信息
+func ExtractAuthFromRequest(c *gin.Context) authn.Authenticator {
+	// 检查Authorization头
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		return authn.Anonymous
+	}
+
+	// 处理Bearer token
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		return &authn.Bearer{Token: token}
+	}
+
+	// 处理Basic认证
+	if strings.HasPrefix(authHeader, "Basic ") {
+		return authn.FromConfig(authn.AuthConfig{
+			Auth: strings.TrimPrefix(authHeader, "Basic "),
+		})
+	}
+
+	return authn.Anonymous
+}
+
+// GetOptionsWithAuth 获取包含认证信息的选项
+func (dp *DockerProxy) GetOptionsWithAuth(c *gin.Context) []remote.Option {
+	auth := ExtractAuthFromRequest(c)
+	options := make([]remote.Option, len(dp.baseOptions)+1)
+	copy(options, dp.baseOptions)
+	options[len(dp.baseOptions)] = remote.WithAuth(auth)
+	return options
+}
+
+// GetAnonymousOptions 获取匿名认证选项（向后兼容）
+func (dp *DockerProxy) GetAnonymousOptions() []remote.Option {
+	options := make([]remote.Option, len(dp.baseOptions)+1)
+	copy(options, dp.baseOptions)
+	options[len(dp.baseOptions)] = remote.WithAuth(authn.Anonymous)
+	return options
 }
 
 // ProxyDockerRegistryGin 标准Docker Registry API v2代理
@@ -171,7 +212,8 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 	// 早期大小检查 - 在manifest阶段就进行验证
 	// 大小检查 - 使用并发版本，可能会获取manifest数据
 	ctx := c.Request.Context()
-	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, dockerProxy.options); !allowed {
+	authOptions := dockerProxy.GetOptionsWithAuth(c)
+	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, authOptions); !allowed {
 		fmt.Printf("镜像 %s:%s 大小检查失败: %s\n", imageRef, reference, reason)
 		c.Header("X-Image-Size-Info", fmt.Sprintf("total=%s,layers=%d", utils.FormatBytes(sizeInfo.TotalSize), sizeInfo.LayerCount))
 		c.String(http.StatusRequestEntityTooLarge, fmt.Sprintf("镜像过大: %s", reason))
@@ -212,7 +254,7 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 	}
 
 	if c.Request.Method == http.MethodHead {
-		desc, err := remote.Head(ref, dockerProxy.options...)
+		desc, err := remote.Head(ref, authOptions...)
 		if err != nil {
 			fmt.Printf("HEAD请求失败: %v\n", err)
 			c.String(http.StatusNotFound, "Manifest not found")
@@ -226,7 +268,7 @@ func handleManifestRequest(c *gin.Context, imageRef, reference string) {
 	} else {
 		// GET请求 - 如果缓存未命中，需要重新获取
 		fmt.Printf("🔄 获取新的manifest: %s:%s\n", imageRef, reference)
-		desc, err := remote.Get(ref, dockerProxy.options...)
+		desc, err := remote.Get(ref, authOptions...)
 		if err != nil {
 			fmt.Printf("GET请求失败: %v\n", err)
 			c.String(http.StatusNotFound, "Manifest not found")
@@ -264,7 +306,8 @@ func handleBlobRequest(c *gin.Context, imageRef, digest string) {
 		return
 	}
 
-	layer, err := remote.Layer(digestRef, dockerProxy.options...)
+	authOptions := dockerProxy.GetOptionsWithAuth(c)
+	layer, err := remote.Layer(digestRef, authOptions...)
 	if err != nil {
 		fmt.Printf("获取layer失败: %v\n", err)
 		c.String(http.StatusNotFound, "Layer not found")
@@ -303,7 +346,8 @@ func handleTagsRequest(c *gin.Context, imageRef string) {
 		return
 	}
 
-	tags, err := remote.List(repo, dockerProxy.options...)
+	authOptions := dockerProxy.GetOptionsWithAuth(c)
+	tags, err := remote.List(repo, authOptions...)
 	if err != nil {
 		fmt.Printf("获取tags失败: %v\n", err)
 		c.String(http.StatusNotFound, "Tags not found")
