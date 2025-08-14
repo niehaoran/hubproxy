@@ -16,15 +16,16 @@ import (
 	"sync"
 	"time"
 
+	"hubproxy/config"
+	"hubproxy/utils"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"hubproxy/config"
-	"hubproxy/utils"
 )
 
 // DebounceEntry 防抖条目
@@ -579,6 +580,7 @@ func InitImageTarRoutes(router *gin.Engine) {
 	{
 		imageAPI.GET("/download/:image", handleDirectImageDownload)
 		imageAPI.GET("/info/:image", handleImageInfo)
+		imageAPI.GET("/size/:image", handleImageSizeInfo)
 		imageAPI.POST("/batch", handleSimpleBatchDownload)
 	}
 }
@@ -760,6 +762,67 @@ func handleImageInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": info})
+}
+
+// handleImageSizeInfo 处理镜像大小信息查询
+func handleImageSizeInfo(c *gin.Context) {
+	imageParam := c.Param("image")
+	if imageParam == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少镜像参数"})
+		return
+	}
+
+	imageRef := strings.ReplaceAll(imageParam, "_", "/")
+	tag := c.DefaultQuery("tag", "latest")
+
+	if !strings.Contains(imageRef, ":") && !strings.Contains(imageRef, "@") {
+		imageRef = imageRef + ":" + tag
+	}
+
+	ref, err := name.ParseReference(imageRef)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "镜像引用格式错误: " + err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	contextOptions := append(globalImageStreamer.remoteOptions, remote.WithContext(ctx))
+
+	// 获取镜像大小信息
+	sizeInfo, err := utils.GetImageSizeInfo(ref.Context().Name(), ref.Identifier(), contextOptions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取镜像大小信息失败: " + err.Error()})
+		return
+	}
+
+	// 格式化响应
+	response := gin.H{
+		"success": true,
+		"data": gin.H{
+			"image":             ref.String(),
+			"total_size":        sizeInfo.TotalSize,
+			"total_size_human":  utils.FormatBytes(sizeInfo.TotalSize),
+			"uncompressed_size": sizeInfo.UncompressedSize,
+			"layer_count":       sizeInfo.LayerCount,
+			"is_multi_arch":     sizeInfo.IsMultiArch,
+			"layer_sizes":       sizeInfo.LayerSizes,
+		},
+	}
+
+	// 检查是否超过限制
+	cfg := config.GetConfig()
+	if cfg.Docker.SizeCheckEnabled {
+		response["size_limit"] = gin.H{
+			"enabled":        true,
+			"max_size":       cfg.Docker.MaxImageSize,
+			"max_size_human": utils.FormatBytes(cfg.Docker.MaxImageSize),
+			"within_limit":   sizeInfo.TotalSize <= cfg.Docker.MaxImageSize,
+		}
+	} else {
+		response["size_limit"] = gin.H{"enabled": false}
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // StreamMultipleImages 批量下载多个镜像

@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"hubproxy/config"
+	"hubproxy/utils"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"hubproxy/config"
-	"hubproxy/utils"
 )
 
 // DockerProxy Docker代理配置
@@ -167,6 +168,23 @@ func parseRegistryPath(path string) (imageName, apiType, reference string) {
 
 // handleManifestRequest 处理manifest请求
 func handleManifestRequest(c *gin.Context, imageRef, reference string) {
+	// 早期大小检查 - 在manifest阶段就进行验证
+	// 大小检查 - 使用并发版本
+	ctx := c.Request.Context()
+	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, dockerProxy.options); !allowed {
+		fmt.Printf("镜像 %s:%s 大小检查失败: %s\n", imageRef, reference, reason)
+		c.Header("X-Image-Size-Info", fmt.Sprintf("total=%s,layers=%d", utils.FormatBytes(sizeInfo.TotalSize), sizeInfo.LayerCount))
+		c.String(http.StatusRequestEntityTooLarge, fmt.Sprintf("镜像过大: %s", reason))
+		return
+	} else if sizeInfo != nil {
+		// 添加大小信息到响应头
+		c.Header("X-Image-Size", utils.FormatBytes(sizeInfo.TotalSize))
+		c.Header("X-Image-Layers", fmt.Sprintf("%d", sizeInfo.LayerCount))
+		if sizeInfo.IsMultiArch {
+			c.Header("X-Image-Multi-Arch", "true")
+		}
+	}
+
 	if utils.IsCacheEnabled() && c.Request.Method == http.MethodGet {
 		cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 
@@ -459,6 +477,23 @@ func handleMultiRegistryRequest(c *gin.Context, registryDomain, remainingPath st
 
 // handleUpstreamManifestRequest 处理上游Registry的manifest请求
 func handleUpstreamManifestRequest(c *gin.Context, imageRef, reference string, mapping config.RegistryMapping) {
+	// 上游Registry大小检查 - 使用并发版本
+	options := createUpstreamOptions(mapping)
+	ctx := c.Request.Context()
+	if allowed, sizeInfo, reason := utils.CheckImageSizeFast(ctx, imageRef, reference, options); !allowed {
+		fmt.Printf("上游镜像 %s:%s 大小检查失败: %s\n", imageRef, reference, reason)
+		c.Header("X-Image-Size-Info", fmt.Sprintf("total=%s,layers=%d", utils.FormatBytes(sizeInfo.TotalSize), sizeInfo.LayerCount))
+		c.String(http.StatusRequestEntityTooLarge, fmt.Sprintf("镜像过大: %s", reason))
+		return
+	} else if sizeInfo != nil {
+		// 添加大小信息到响应头
+		c.Header("X-Image-Size", utils.FormatBytes(sizeInfo.TotalSize))
+		c.Header("X-Image-Layers", fmt.Sprintf("%d", sizeInfo.LayerCount))
+		if sizeInfo.IsMultiArch {
+			c.Header("X-Image-Multi-Arch", "true")
+		}
+	}
+
 	if utils.IsCacheEnabled() && c.Request.Method == http.MethodGet {
 		cacheKey := utils.BuildManifestCacheKey(imageRef, reference)
 
@@ -482,8 +517,6 @@ func handleUpstreamManifestRequest(c *gin.Context, imageRef, reference string, m
 		c.String(http.StatusBadRequest, "Invalid reference")
 		return
 	}
-
-	options := createUpstreamOptions(mapping)
 
 	if c.Request.Method == http.MethodHead {
 		desc, err := remote.Head(ref, options...)

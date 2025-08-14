@@ -48,6 +48,13 @@ type AppConfig struct {
 		MaxImages int `toml:"maxImages"`
 	} `toml:"download"`
 
+	Docker struct {
+		MaxImageSize      int64  `toml:"maxImageSize"`      // 镜像最大大小限制（字节）
+		SizeCheckEnabled  bool   `toml:"sizeCheckEnabled"`  // 是否启用大小检查
+		ConcurrentWorkers int    `toml:"concurrentWorkers"` // 并发工作者数量
+		CheckTimeout      string `toml:"checkTimeout"`      // 大小检查超时时间
+	} `toml:"docker"`
+
 	Registries map[string]RegistryMapping `toml:"registries"`
 
 	TokenCache struct {
@@ -107,6 +114,17 @@ func DefaultConfig() *AppConfig {
 			MaxImages int `toml:"maxImages"`
 		}{
 			MaxImages: 10,
+		},
+		Docker: struct {
+			MaxImageSize      int64  `toml:"maxImageSize"`      // 镜像最大大小限制（字节）
+			SizeCheckEnabled  bool   `toml:"sizeCheckEnabled"`  // 是否启用大小检查
+			ConcurrentWorkers int    `toml:"concurrentWorkers"` // 并发工作者数量
+			CheckTimeout      string `toml:"checkTimeout"`      // 大小检查超时时间
+		}{
+			MaxImageSize:      1024 * 1024 * 1024, // 1GB
+			SizeCheckEnabled:  true,
+			ConcurrentWorkers: 10,    // 默认10个并发工作者
+			CheckTimeout:      "30s", // 默认30秒超时
 		},
 		Registries: map[string]RegistryMapping{
 			"ghcr.io": {
@@ -254,6 +272,17 @@ func overrideFromEnv(cfg *AppConfig) {
 	if val := os.Getenv("MAX_IMAGES"); val != "" {
 		if maxImages, err := strconv.Atoi(val); err == nil && maxImages > 0 {
 			cfg.Download.MaxImages = maxImages
+		}
+	}
+
+	if val := os.Getenv("MAX_IMAGE_SIZE"); val != "" {
+		if size, err := strconv.ParseInt(val, 10, 64); err == nil && size > 0 {
+			cfg.Docker.MaxImageSize = size
+		}
+	}
+	if val := os.Getenv("SIZE_CHECK_ENABLED"); val != "" {
+		if enabled, err := strconv.ParseBool(val); err == nil {
+			cfg.Docker.SizeCheckEnabled = enabled
 		}
 	}
 }

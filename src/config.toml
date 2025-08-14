@@ -52,6 +52,16 @@ proxy = ""
 # 批量下载离线镜像数量限制
 maxImages = 10
 
+[docker]
+# 镜像最大大小限制（字节），默认1GB
+maxImageSize = 1073741824
+# 是否启用镜像大小检查
+sizeCheckEnabled = true
+# 并发工作者数量（用于大小检查）
+concurrentWorkers = 10
+# 大小检查超时时间
+checkTimeout = "30s"
+
 # Registry映射配置，支持多种镜像仓库上游
 [registries]
 

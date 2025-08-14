@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"hubproxy/config"
 	"hubproxy/handlers"
 	"hubproxy/utils"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 //go:embed public/*
@@ -61,6 +62,9 @@ func main() {
 
 	// 初始化防抖器
 	handlers.InitDebouncer()
+
+	// 初始化并发镜像大小检查器
+	utils.InitConcurrentImageSizeChecker()
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -119,6 +123,11 @@ func main() {
 	fmt.Printf("🚀 HubProxy 启动成功\n")
 	fmt.Printf("📡 监听地址: %s:%d\n", cfg.Server.Host, cfg.Server.Port)
 	fmt.Printf("⚡ 限流配置: %d请求/%g小时\n", cfg.RateLimit.RequestLimit, cfg.RateLimit.PeriodHours)
+	if cfg.Docker.SizeCheckEnabled {
+		fmt.Printf("📏 镜像大小限制: %s (已启用)\n", utils.FormatBytes(cfg.Docker.MaxImageSize))
+	} else {
+		fmt.Printf("📏 镜像大小限制: 已禁用\n")
+	}
 
 	// 显示HTTP/2支持状态
 	if cfg.Server.EnableH2C {
