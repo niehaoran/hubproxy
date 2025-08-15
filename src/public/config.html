@@ -518,7 +518,11 @@
                 if (data.success) {
                     showResult(data.data);
                 } else {
-                    showError(data.error || '获取配置失败');
+                    let errorMsg = data.error || '获取配置失败';
+                    if (errorMsg.includes('不支持的digest算法')) {
+                        errorMsg += '\n\n💡 建议：\n• 尝试使用该镜像的更新版本\n• 该镜像可能使用了过时的格式\n• 请联系镜像维护者更新镜像';
+                    }
+                    showError(errorMsg);
                 }
             } catch (err) {
                 hideLoading();

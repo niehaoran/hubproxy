@@ -133,9 +133,30 @@ func HandleImageConfig(c *gin.Context) {
 	// 获取镜像配置
 	configData, err := getImageConfig(ctx, ref, platform)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ImageConfigResponse{
+		// 尝试不同的错误处理策略
+		errorMsg := err.Error()
+		statusCode := http.StatusInternalServerError
+
+		if strings.Contains(errorMsg, "unsupported digest algorithm") {
+			statusCode = http.StatusBadRequest
+			errorMsg = "该镜像使用了不支持的digest算法，请尝试使用较新版本的镜像"
+		} else if strings.Contains(errorMsg, "不支持的digest算法") {
+			statusCode = http.StatusBadRequest
+			errorMsg = "该镜像使用了不支持的digest算法，请尝试使用较新版本的镜像"
+		} else if strings.Contains(errorMsg, "manifest not found") {
+			statusCode = http.StatusNotFound
+			errorMsg = "未找到指定的镜像或标签"
+		} else if strings.Contains(errorMsg, "unauthorized") || strings.Contains(errorMsg, "authentication required") {
+			statusCode = http.StatusUnauthorized
+			errorMsg = "访问该镜像需要认证"
+		} else if strings.Contains(errorMsg, "image not found") {
+			statusCode = http.StatusNotFound
+			errorMsg = "未找到指定的镜像"
+		}
+
+		c.JSON(statusCode, ImageConfigResponse{
 			Success: false,
-			Error:   "获取镜像配置失败: " + err.Error(),
+			Error:   "获取镜像配置失败: " + errorMsg,
 		})
 		return
 	}
@@ -203,8 +224,72 @@ func getSingleImageConfig(ctx context.Context, desc *remote.Descriptor, configDa
 		return nil, fmt.Errorf("解析manifest失败: %w", err)
 	}
 
+	// 验证和处理digest
+	digestStr := manifest.Config.Digest
+	if digestStr == "" {
+		return nil, fmt.Errorf("配置digest为空")
+	}
+
+	// 检查digest格式
+	if !strings.Contains(digestStr, ":") {
+		return nil, fmt.Errorf("无效的digest格式: %s", digestStr)
+	}
+
+	// 分解digest
+	parts := strings.SplitN(digestStr, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("无效的digest格式: %s", digestStr)
+	}
+
+	algorithm := parts[0]
+	hash := parts[1]
+
+	// 检查是否为支持的算法
+	supportedAlgorithms := []string{"sha256", "sha1", "md5"}
+	supported := false
+	for _, algo := range supportedAlgorithms {
+		if algorithm == algo {
+			supported = true
+			break
+		}
+	}
+
+	if !supported {
+		// 如果不支持该算法，尝试返回基本信息而不是完全失败
+		fmt.Printf("⚠️  不支持的digest算法: %s，返回基本信息\n", algorithm)
+		return &ImageConfigData{
+			Name:         configData.Name,
+			Tag:          configData.Tag,
+			Architecture: "unknown",
+			OS:           "unknown",
+			Created:      "",
+			Author:       "",
+			IsMultiArch:  configData.IsMultiArch,
+			Platforms:    configData.Platforms,
+			Config: &ContainerConfig{
+				Env: []string{fmt.Sprintf("UNSUPPORTED_DIGEST_ALGORITHM=%s", algorithm)},
+			},
+		}, nil
+	}
+
+	// 验证hash长度
+	switch algorithm {
+	case "sha256":
+		if len(hash) != 64 {
+			return nil, fmt.Errorf("sha256 hash长度无效: %d", len(hash))
+		}
+	case "sha1":
+		if len(hash) != 40 {
+			return nil, fmt.Errorf("sha1 hash长度无效: %d", len(hash))
+		}
+	case "md5":
+		if len(hash) != 32 {
+			return nil, fmt.Errorf("md5 hash长度无效: %d", len(hash))
+		}
+	}
+
 	// 获取配置blob
-	configRef, err := name.NewDigest(fmt.Sprintf("%s@%s", configData.Name, manifest.Config.Digest))
+	configRef, err := name.NewDigest(fmt.Sprintf("%s@%s", configData.Name, digestStr))
 	if err != nil {
 		return nil, fmt.Errorf("构建配置引用失败: %w", err)
 	}
