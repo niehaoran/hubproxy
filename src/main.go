@@ -102,12 +102,18 @@ func main() {
 	router.GET("/search.html", func(c *gin.Context) {
 		serveEmbedFile(c, "public/search.html")
 	})
+	router.GET("/config.html", func(c *gin.Context) {
+		serveEmbedFile(c, "public/config.html")
+	})
 	router.GET("/favicon.ico", func(c *gin.Context) {
 		serveEmbedFile(c, "public/favicon.ico")
 	})
 
 	// 注册dockerhub搜索路由
 	handlers.RegisterSearchRoute(router)
+
+	// 注册镜像配置查询路由
+	handlers.RegisterImageConfigRoutes(router)
 
 	// 注册Docker认证路由
 	router.Any("/token", handlers.ProxyDockerAuthGin)

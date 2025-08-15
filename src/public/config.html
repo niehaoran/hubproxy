@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Docker镜像配置详情查询">
+    <meta name="keywords" content="Docker,镜像配置,docker inspect">
+    <meta name="color-scheme" content="dark light">
+    <title>Docker镜像配置详情</title>
+    <link rel="icon" href="./favicon.ico">
+    <style>
+        :root {
+            --background: #ffffff;
+            --foreground: #0f172a;
+            --card: #ffffff;
+            --card-foreground: #0f172a;
+            --primary: #2563eb;
+            --primary-foreground: #f8fafc;
+            --secondary: #f1f5f9;
+            --secondary-foreground: #0f172a;
+            --muted: #f1f5f9;
+            --muted-foreground: #64748b;
+            --accent: #f1f5f9;
+            --accent-foreground: #0f172a;
+            --border: #e2e8f0;
+            --input: #ffffff;
+            --ring: #2563eb;
+            --radius: 0.5rem;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        .dark {
+            --background: #0f172a;
+            --foreground: #f8fafc;
+            --card: #1e293b;
+            --card-foreground: #f8fafc;
+            --primary: #3b82f6;
+            --primary-foreground: #f8fafc;
+            --secondary: #1e293b;
+            --secondary-foreground: #f8fafc;
+            --muted: #1e293b;
+            --muted-foreground: #94a3b8;
+            --accent: #1e293b;
+            --accent-foreground: #f8fafc;
+            --border: #334155;
+            --input: #1e293b;
+            --ring: #3b82f6;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --background: #0f172a;
+                --foreground: #f8fafc;
+                --card: #1e293b;
+                --card-foreground: #f8fafc;
+                --primary: #3b82f6;
+                --primary-foreground: #f8fafc;
+                --secondary: #1e293b;
+                --secondary-foreground: #f8fafc;
+                --muted: #1e293b;
+                --muted-foreground: #94a3b8;
+                --accent: #1e293b;
+                --accent-foreground: #f8fafc;
+                --border: #334155;
+                --input: #1e293b;
+                --ring: #3b82f6;
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background-color: var(--background);
+            color: var(--foreground);
+            line-height: 1.5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .navbar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            width: 100%;
+            border-bottom: 1px solid var(--border);
+            background-color: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            padding: 0;
+        }
+
+        .dark .navbar {
+            background-color: rgba(15, 23, 42, 0.95);
+        }
+
+        .navbar-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 4rem;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            color: var(--foreground);
+            font-weight: 600;
+            font-size: 1.125rem;
+        }
+
+        .logo-icon {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.5rem;
+            background: linear-gradient(135deg, var(--primary), #3b82f6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-link {
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius);
+            text-decoration: none;
+            color: var(--muted-foreground);
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+
+        .nav-link:hover,
+        .nav-link.active {
+            color: var(--foreground);
+            background-color: var(--accent);
+        }
+
+        .container {
+            flex: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+            width: 100%;
+        }
+
+        .page-header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .page-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--primary), #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .page-description {
+            font-size: 1.125rem;
+            color: var(--muted-foreground);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .search-form {
+            background-color: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--foreground);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background-color: var(--input);
+            color: var(--foreground);
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--ring);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 1rem;
+            align-items: end;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: var(--primary-foreground);
+        }
+
+        .btn-primary:hover {
+            background-color: #1d4ed8;
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+            color: var(--muted-foreground);
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .error {
+            display: none;
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 1rem;
+            border-radius: var(--radius);
+            margin-bottom: 1rem;
+        }
+
+        .dark .error {
+            background-color: #450a0a;
+            border-color: #7f1d1d;
+            color: #fca5a5;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .config-result {
+            display: none;
+        }
+
+        .config-result.show {
+            display: block;
+        }
+
+        .config-card {
+            background-color: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .config-header {
+            background-color: var(--muted);
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .config-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .config-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.75rem;
+            background-color: var(--primary);
+            color: var(--primary-foreground);
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .config-content {
+            padding: 1.5rem;
+        }
+
+        .config-row {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 1rem;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .config-row:last-child {
+            border-bottom: none;
+        }
+
+        .config-label {
+            font-weight: 500;
+            color: var(--muted-foreground);
+        }
+
+        .config-value {
+            color: var(--foreground);
+            word-break: break-all;
+        }
+
+        .config-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .config-list li {
+            padding: 0.25rem 0.75rem;
+            background-color: var(--muted);
+            margin: 0.25rem 0;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+        }
+
+        .config-json {
+            background-color: var(--muted);
+            border-radius: 0.25rem;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            overflow-x: auto;
+        }
+
+        .platform-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .platform-item {
+            background-color: var(--muted);
+            padding: 1rem;
+            border-radius: 0.25rem;
+            text-align: center;
+        }
+
+        .copy-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted-foreground);
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background-color: var(--muted);
+            color: var(--foreground);
+        }
+
+        @media (max-width: 768px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+            
+            .config-row {
+                grid-template-columns: 1fr;
+                gap: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="navbar-container">
+            <a href="/" class="logo">
+                <div class="logo-icon">🐳</div>
+                <span>HubProxy</span>
+            </a>
+            <div class="nav-links">
+                <a href="/" class="nav-link">首页</a>
+                <a href="/search.html" class="nav-link">搜索</a>
+                <a href="/images.html" class="nav-link">镜像</a>
+                <a href="/config.html" class="nav-link active">配置</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="page-header">
+            <h1 class="page-title">镜像配置详情</h1>
+            <p class="page-description">查询Docker镜像的详细配置信息，包括端口、环境变量、启动命令等</p>
+        </div>
+
+        <div class="search-form">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="imageInput">镜像名称</label>
+                    <input type="text" id="imageInput" class="form-input" 
+                           placeholder="例如: nginx, library/ubuntu, myregistry.io/myapp" 
+                           autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="tagInput">标签</label>
+                    <input type="text" id="tagInput" class="form-input" 
+                           placeholder="latest" value="latest">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="platformInput">平台（可选）</label>
+                    <input type="text" id="platformInput" class="form-input" 
+                           placeholder="linux/amd64">
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="searchConfig()">
+                <span>🔍</span>
+                查询配置
+            </button>
+        </div>
+
+        <div id="loading" class="loading">
+            <div style="font-size: 2rem; margin-bottom: 1rem;">⏳</div>
+            <div>正在获取镜像配置...</div>
+        </div>
+
+        <div id="error" class="error"></div>
+
+        <div id="result" class="config-result"></div>
+    </div>
+
+    <script>
+        async function searchConfig() {
+            const imageInput = document.getElementById('imageInput');
+            const tagInput = document.getElementById('tagInput');
+            const platformInput = document.getElementById('platformInput');
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const result = document.getElementById('result');
+
+            const imageName = imageInput.value.trim();
+            if (!imageName) {
+                showError('请输入镜像名称');
+                return;
+            }
+
+            const tag = tagInput.value.trim() || 'latest';
+            const platform = platformInput.value.trim();
+
+            hideError();
+            hideResult();
+            showLoading();
+
+            try {
+                // 构建查询URL
+                const encodedImage = imageName.replace(/\//g, '_');
+                let url = `/config/${encodedImage}?tag=${encodeURIComponent(tag)}`;
+                if (platform) {
+                    url += `&platform=${encodeURIComponent(platform)}`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                hideLoading();
+
+                if (data.success) {
+                    showResult(data.data);
+                } else {
+                    showError(data.error || '获取配置失败');
+                }
+            } catch (err) {
+                hideLoading();
+                showError('网络请求失败: ' + err.message);
+            }
+        }
+
+        function showLoading() {
+            document.getElementById('loading').classList.add('show');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').classList.remove('show');
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+        }
+
+        function hideError() {
+            document.getElementById('error').classList.remove('show');
+        }
+
+        function hideResult() {
+            document.getElementById('result').classList.remove('show');
+        }
+
+        function showResult(data) {
+            const result = document.getElementById('result');
+            result.innerHTML = renderConfig(data);
+            result.classList.add('show');
+        }
+
+        function renderConfig(data) {
+            let html = '';
+
+            // 基本信息
+            html += `
+                <div class="config-card">
+                    <div class="config-header">
+                        <div class="config-title">
+                            📋 基本信息
+                            ${data.is_multi_arch ? '<span class="config-badge">多架构</span>' : ''}
+                        </div>
+                        <button class="copy-btn" onclick="copyToClipboard('basic-info')">复制</button>
+                    </div>
+                    <div class="config-content" id="basic-info">
+                        <div class="config-row">
+                            <div class="config-label">镜像名称</div>
+                            <div class="config-value">${data.name}:${data.tag}</div>
+                        </div>
+                        <div class="config-row">
+                            <div class="config-label">架构</div>
+                            <div class="config-value">${data.architecture || 'N/A'}</div>
+                        </div>
+                        <div class="config-row">
+                            <div class="config-label">操作系统</div>
+                            <div class="config-value">${data.os || 'N/A'}</div>
+                        </div>
+                        <div class="config-row">
+                            <div class="config-label">创建时间</div>
+                            <div class="config-value">${data.created || 'N/A'}</div>
+                        </div>
+                        ${data.author ? `
+                        <div class="config-row">
+                            <div class="config-label">作者</div>
+                            <div class="config-value">${data.author}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+
+            // 多架构平台信息
+            if (data.is_multi_arch && data.platforms) {
+                html += `
+                    <div class="config-card">
+                        <div class="config-header">
+                            <div class="config-title">🏗️ 支持平台</div>
+                        </div>
+                        <div class="config-content">
+                            <div class="platform-grid">
+                                ${data.platforms.map(p => `
+                                    <div class="platform-item">
+                                        <strong>${p.os}/${p.architecture}</strong>
+                                        ${p.variant ? `<br><small>${p.variant}</small>` : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 容器配置
+            if (data.config) {
+                html += renderContainerConfig(data.config);
+            }
+
+            // 构建历史
+            if (data.history && data.history.length > 0) {
+                html += `
+                    <div class="config-card">
+                        <div class="config-header">
+                            <div class="config-title">📚 构建历史</div>
+                        </div>
+                        <div class="config-content">
+                            ${data.history.slice(0, 10).map(h => `
+                                <div class="config-row">
+                                    <div class="config-label">${h.created || 'N/A'}</div>
+                                    <div class="config-value">
+                                        <code style="background: var(--muted); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                                            ${h.created_by || 'N/A'}
+                                        </code>
+                                    </div>
+                                </div>
+                            `).join('')}
+                            ${data.history.length > 10 ? `<p style="text-align: center; color: var(--muted-foreground); margin-top: 1rem;">... 还有 ${data.history.length - 10} 条记录</p>` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+
+            return html;
+        }
+
+        function renderContainerConfig(config) {
+            let html = `
+                <div class="config-card">
+                    <div class="config-header">
+                        <div class="config-title">⚙️ 容器配置</div>
+                        <button class="copy-btn" onclick="copyToClipboard('container-config')">复制</button>
+                    </div>
+                    <div class="config-content" id="container-config">
+            `;
+
+            // 基础配置
+            if (config.User) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">用户</div>
+                        <div class="config-value">${config.User}</div>
+                    </div>
+                `;
+            }
+
+            if (config.WorkingDir) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">工作目录</div>
+                        <div class="config-value">${config.WorkingDir}</div>
+                    </div>
+                `;
+            }
+
+            // 启动命令
+            if (config.Entrypoint && config.Entrypoint.length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">入口点</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${config.Entrypoint.map(cmd => `<li>${cmd}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (config.Cmd && config.Cmd.length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">默认命令</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${config.Cmd.map(cmd => `<li>${cmd}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 暴露端口
+            if (config.ExposedPorts && Object.keys(config.ExposedPorts).length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">暴露端口</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${Object.keys(config.ExposedPorts).map(port => `<li>${port}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 环境变量
+            if (config.Env && config.Env.length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">环境变量</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${config.Env.map(env => `<li>${env}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 卷挂载
+            if (config.Volumes && Object.keys(config.Volumes).length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">数据卷</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${Object.keys(config.Volumes).map(vol => `<li>${vol}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 标签
+            if (config.Labels && Object.keys(config.Labels).length > 0) {
+                html += `
+                    <div class="config-row">
+                        <div class="config-label">标签</div>
+                        <div class="config-value">
+                            <ul class="config-list">
+                                ${Object.entries(config.Labels).map(([key, value]) => `<li>${key}=${value}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            html += `</div></div>`;
+            return html;
+        }
+
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            const text = element.innerText;
+            
+            navigator.clipboard.writeText(text).then(() => {
+                // 简单的成功提示
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = '已复制!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            }).catch(err => {
+                console.error('复制失败:', err);
+            });
+        }
+
+        // 支持回车键搜索
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputs = document.querySelectorAll('.form-input');
+            inputs.forEach(input => {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        searchConfig();
+                    }
+                });
+            });
+        });
+
+        // URL参数预填充
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('image')) {
+            document.getElementById('imageInput').value = urlParams.get('image');
+            if (urlParams.has('tag')) {
+                document.getElementById('tagInput').value = urlParams.get('tag');
+            }
+            if (urlParams.has('platform')) {
+                document.getElementById('platformInput').value = urlParams.get('platform');
+            }
+            // 自动搜索
+            setTimeout(searchConfig, 100);
+        }
+    </script>
+</body>
+</html> 
