@@ -386,12 +386,19 @@ func handleBlobRequest(c *gin.Context, imageRef, digest string) {
 	}
 	defer reader.Close()
 
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Length", fmt.Sprintf("%d", size))
+	// 解析Range请求
+	rangeHeader := c.GetHeader("Range")
+	rangeInfo := utils.ParseRangeHeader(rangeHeader, size)
+
+	// 设置Range响应头
+	utils.SetRangeHeaders(c.Writer, rangeInfo, size, "application/octet-stream")
 	c.Header("Docker-Content-Digest", digest)
 
-	c.Status(http.StatusOK)
-	io.Copy(c.Writer, reader)
+	// 使用Range支持的数据传输
+	if err := utils.CopyRange(c.Writer, reader, rangeInfo); err != nil {
+		fmt.Printf("Range数据传输失败: %v\n", err)
+		return
+	}
 }
 
 // handleTagsRequest 处理tags列表请求
@@ -699,12 +706,19 @@ func handleUpstreamBlobRequest(c *gin.Context, imageRef, digest string, mapping 
 	}
 	defer reader.Close()
 
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Length", fmt.Sprintf("%d", size))
+	// 解析Range请求
+	rangeHeader := c.GetHeader("Range")
+	rangeInfo := utils.ParseRangeHeader(rangeHeader, size)
+
+	// 设置Range响应头
+	utils.SetRangeHeaders(c.Writer, rangeInfo, size, "application/octet-stream")
 	c.Header("Docker-Content-Digest", digest)
 
-	c.Status(http.StatusOK)
-	io.Copy(c.Writer, reader)
+	// 使用Range支持的数据传输
+	if err := utils.CopyRange(c.Writer, reader, rangeInfo); err != nil {
+		fmt.Printf("Range数据传输失败: %v\n", err)
+		return
+	}
 }
 
 // handleUpstreamTagsRequest 处理上游Registry的tags请求

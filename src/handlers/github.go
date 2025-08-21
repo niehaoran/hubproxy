@@ -8,9 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"hubproxy/config"
 	"hubproxy/utils"
+
+	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -97,19 +98,54 @@ func proxyGitHubWithRedirect(c *gin.Context, u string, redirectCount int) {
 		return
 	}
 
-	req, err := http.NewRequest(c.Request.Method, u, c.Request.Body)
+	// 首先发送HEAD请求获取文件大小
+	headReq, err := http.NewRequest("HEAD", u, nil)
 	if err != nil {
 		c.String(http.StatusInternalServerError, fmt.Sprintf("server error %v", err))
 		return
 	}
 
-	// 复制请求头
+	// 复制认证相关的请求头到HEAD请求
 	for key, values := range c.Request.Header {
-		for _, value := range values {
-			req.Header.Add(key, value)
+		if strings.HasPrefix(strings.ToLower(key), "authorization") ||
+			strings.HasPrefix(strings.ToLower(key), "cookie") {
+			for _, value := range values {
+				headReq.Header.Add(key, value)
+			}
 		}
 	}
-	req.Header.Del("Host")
+
+	headResp, err := utils.GetGlobalHTTPClient().Do(headReq)
+	if err != nil {
+		c.String(http.StatusInternalServerError, fmt.Sprintf("server error %v", err))
+		return
+	}
+	headResp.Body.Close()
+
+	// 获取文件大小
+	var contentLength int64
+	if contentLengthStr := headResp.Header.Get("Content-Length"); contentLengthStr != "" {
+		contentLength, _ = strconv.ParseInt(contentLengthStr, 10, 64)
+	}
+
+	// 检查文件大小限制
+	cfg := config.GetConfig()
+	if contentLength > 0 && contentLength > cfg.Server.FileSize {
+		c.String(http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("文件过大，限制大小: %d MB", cfg.Server.FileSize/(1024*1024)))
+		return
+	}
+
+	// 解析Range请求
+	rangeHeader := c.GetHeader("Range")
+	rangeInfo := utils.ParseRangeHeader(rangeHeader, contentLength)
+
+	// 创建实际的下载请求
+	req, err := utils.CreateRangeRequest(c.Request.Method, u, rangeInfo, c.Request)
+	if err != nil {
+		c.String(http.StatusInternalServerError, fmt.Sprintf("server error %v", err))
+		return
+	}
 
 	resp, err := utils.GetGlobalHTTPClient().Do(req)
 	if err != nil {
@@ -121,16 +157,6 @@ func proxyGitHubWithRedirect(c *gin.Context, u string, redirectCount int) {
 			fmt.Printf("关闭响应体失败: %v\n", err)
 		}
 	}()
-
-	// 检查文件大小限制
-	cfg := config.GetConfig()
-	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
-		if size, err := strconv.ParseInt(contentLength, 10, 64); err == nil && size > cfg.Server.FileSize {
-			c.String(http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("文件过大，限制大小: %d MB", cfg.Server.FileSize/(1024*1024)))
-			return
-		}
-	}
 
 	// 清理安全相关的头
 	resp.Header.Del("Content-Security-Policy")
@@ -146,8 +172,35 @@ func proxyGitHubWithRedirect(c *gin.Context, u string, redirectCount int) {
 		realHost = "https://" + realHost
 	}
 
-	// 处理.sh文件的智能处理
-	if strings.HasSuffix(strings.ToLower(u), ".sh") {
+	// 处理重定向
+	if location := resp.Header.Get("Location"); location != "" {
+		if CheckGitHubURL(location) != nil {
+			c.Header("Location", "/"+location)
+		} else {
+			proxyGitHubWithRedirect(c, location, redirectCount+1)
+			return
+		}
+	}
+
+	// 获取内容类型
+	contentType := resp.Header.Get("Content-Type")
+
+	// 设置Range响应头
+	utils.SetRangeHeaders(c.Writer, rangeInfo, contentLength, contentType)
+
+	// 复制其他响应头（排除已设置的）
+	for key, values := range resp.Header {
+		lowerKey := strings.ToLower(key)
+		if lowerKey != "content-length" && lowerKey != "content-type" &&
+			lowerKey != "content-range" && lowerKey != "accept-ranges" {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+	}
+
+	// 处理.sh文件的智能处理（仅在非Range请求时）
+	if strings.HasSuffix(strings.ToLower(u), ".sh") && !rangeInfo.Valid {
 		isGzipCompressed := resp.Header.Get("Content-Encoding") == "gzip"
 
 		processedBody, processedSize, err := utils.ProcessSmart(resp.Body, isGzipCompressed, realHost)
@@ -159,55 +212,20 @@ func proxyGitHubWithRedirect(c *gin.Context, u string, redirectCount int) {
 
 		// 智能设置响应头
 		if processedSize > 0 {
-			resp.Header.Del("Content-Length")
-			resp.Header.Del("Content-Encoding")
-			resp.Header.Set("Transfer-Encoding", "chunked")
+			c.Header("Content-Length", "")
+			c.Header("Content-Encoding", "")
+			c.Header("Transfer-Encoding", "chunked")
 		}
-
-		// 复制其他响应头
-		for key, values := range resp.Header {
-			for _, value := range values {
-				c.Header(key, value)
-			}
-		}
-
-		// 处理重定向
-		if location := resp.Header.Get("Location"); location != "" {
-			if CheckGitHubURL(location) != nil {
-				c.Header("Location", "/"+location)
-			} else {
-				proxyGitHubWithRedirect(c, location, redirectCount+1)
-				return
-			}
-		}
-
-		c.Status(resp.StatusCode)
 
 		// 输出处理后的内容
 		if _, err := io.Copy(c.Writer, processedBody); err != nil {
 			return
 		}
 	} else {
-		// 复制响应头
-		for key, values := range resp.Header {
-			for _, value := range values {
-				c.Header(key, value)
-			}
+		// 使用Range支持的流式转发
+		if err := utils.CopyRange(c.Writer, resp.Body, rangeInfo); err != nil {
+			fmt.Printf("Range数据传输失败: %v\n", err)
+			return
 		}
-
-		// 处理重定向
-		if location := resp.Header.Get("Location"); location != "" {
-			if CheckGitHubURL(location) != nil {
-				c.Header("Location", "/"+location)
-			} else {
-				proxyGitHubWithRedirect(c, location, redirectCount+1)
-				return
-			}
-		}
-
-		c.Status(resp.StatusCode)
-
-		// 直接流式转发
-		io.Copy(c.Writer, resp.Body)
 	}
 }
