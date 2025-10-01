@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"hubproxy/config"
 	"hubproxy/handlers"
 	"hubproxy/utils"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 //go:embed public/*
@@ -104,6 +105,9 @@ func main() {
 
 	// 注册dockerhub搜索路由
 	handlers.RegisterSearchRoute(router)
+
+	// 注册镜像大小查询路由
+	handlers.RegisterImageSizeRoutes(router)
 
 	// 注册Docker认证路由
 	router.Any("/token", handlers.ProxyDockerAuthGin)
